@@ -22,16 +22,12 @@ const ID_TYPES = [
   "PhilHealth ID", "Postal ID", "School ID", "Other",
 ];
 
-// Scan flow states:
-//   IDLE → SCANNING → RESULT
-//   Resident:  RESULT → VERIFY_PIN → DONE
-//   Visitor:   RESULT → VERIFY_ID  → VERIFY_PIN → DONE
 const SCAN_STATE = {
   IDLE:       "IDLE",
   SCANNING:   "SCANNING",
   RESULT:     "RESULT",
-  VERIFY_ID:  "VERIFY_ID",   // visitor only — collect physical ID
-  VERIFY_PIN: "VERIFY_PIN",  // both — resident or host resident types PIN
+  VERIFY_ID:  "VERIFY_ID",
+  VERIFY_PIN: "VERIFY_PIN",
   DONE:       "DONE",
 };
 
@@ -192,7 +188,7 @@ function NavItem({ id, icon: Icon, label, active, onClick }) { // eslint-disable
 }
 
 // ── PIN Input (masked, numeric) ───────────────────────────────────────────────
-function PinInput({ value, onChange, placeholder = "••••••" }) {
+function PinInput({ value, onChange }) {
   const [revealed, setRevealed] = useState(false);
   return (
     <div className="relative">
@@ -202,7 +198,7 @@ function PinInput({ value, onChange, placeholder = "••••••" }) {
         maxLength={6}
         value={value}
         onChange={(e) => onChange(e.target.value.replace(/\D/g, "").slice(0, 6))}
-        placeholder={placeholder}
+        placeholder="••••••"
         className="w-full border border-gray-200 bg-gray-50 text-center text-2xl font-black tracking-[0.4em] px-4 py-4 rounded-xl outline-none focus:border-gray-900 transition-colors pr-12"
       />
       <button
@@ -216,6 +212,26 @@ function PinInput({ value, onChange, placeholder = "••••••" }) {
   );
 }
 
+// ── Live Clock ────────────────────────────────────────────────────────────────
+function LiveClock() {
+  const [now, setNow] = useState(new Date());
+
+  useEffect(() => {
+    const interval = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const timeStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+  const dateStr = now.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+
+  return (
+    <div className="text-right">
+      <p className="text-base font-black text-white tabular-nums">{timeStr}</p>
+      <p className="text-[9px] text-gray-500 uppercase tracking-widest">{dateStr}</p>
+    </div>
+  );
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 export default function GuardDashboard() {
   const { userData, logout } = useAuth();
@@ -223,8 +239,8 @@ export default function GuardDashboard() {
   const [tab, setTab]               = useState("scanner");
   const [menuOpen, setMenuOpen]     = useState(false);
   const [scanState, setScanState]   = useState(SCAN_STATE.IDLE);
-  const [scanData, setScanData]     = useState(null);   // resident or visitor doc
-  const [scanType, setScanType]     = useState(null);   // "resident" | "visitor"
+  const [scanData, setScanData]     = useState(null);
+  const [scanType, setScanType]     = useState(null);
   const [blacklistEntry, setBlacklist] = useState(null);
   const [action, setAction]         = useState("entry");
   const [logLoading, setLogLoading] = useState(false);
@@ -240,13 +256,12 @@ export default function GuardDashboard() {
   const [pinError, setPinError]     = useState("");
   const [pinLoading, setPinLoading] = useState(false);
 
-  // For resident PIN step: we already have scanData (the resident doc)
-  // For visitor PIN step: we need to look up the HOST resident by residentId
+  // For visitor PIN step: look up the host resident
   const [hostResident, setHostResident] = useState(null);
 
   // Manual override data
-  const [showOverride, setShowOverride]     = useState(false);
-  const [residents, setResidents]           = useState([]);
+  const [showOverride, setShowOverride] = useState(false);
+  const [residents, setResidents]       = useState([]);
   const [activeVisitors, setActiveVisitors] = useState([]);
 
   // Session activity log
@@ -254,10 +269,6 @@ export default function GuardDashboard() {
 
   const scannerRef         = useRef(null);
   const scannerInstanceRef = useRef(null);
-
-  const now     = new Date();
-  const timeStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
-  const dateStr = now.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 
   useEffect(() => {
     async function load() {
@@ -270,7 +281,7 @@ export default function GuardDashboard() {
     load();
   }, []);
 
-  // ── Scanner ─────────────────────────────────────────────────────────────────
+  // ── Scanner ──────────────────────────────────────────────────────────────────
   const startScanner = async () => {
     setScanState(SCAN_STATE.SCANNING);
     setError("");
@@ -302,12 +313,11 @@ export default function GuardDashboard() {
 
   useEffect(() => () => { stopScanner(); }, []);
 
-  // ── QR Result handler ────────────────────────────────────────────────────────
+  // ── QR Result handler ─────────────────────────────────────────────────────────
   const handleQRResult = async (decodedText) => {
     await stopScanner();
     setError("");
     try {
-      // ── Try resident first ────────────────────────────────────────────────
       let doc = await getResidentByResidentId(decodedText);
       if (doc) {
         const bl = await checkBlacklist(doc.residentId);
@@ -315,10 +325,9 @@ export default function GuardDashboard() {
         setScanData(doc);
         setScanType("resident");
         setAction(doc.isInside ? "exit" : "entry");
-        setScanState(SCAN_STATE.RESULT);  // ← BUG FIX: was incorrectly routing to visitor verify
+        setScanState(SCAN_STATE.RESULT);
         return;
       }
-      // ── Try visitor ───────────────────────────────────────────────────────
       doc = await getVisitorRequestByVisitorId(decodedText);
       if (doc) {
         if (doc.isUsed)                { setError("This visitor pass has already been used."); setScanState(SCAN_STATE.IDLE); return; }
@@ -339,9 +348,7 @@ export default function GuardDashboard() {
     }
   };
 
-  // ── Proceed from RESULT ──────────────────────────────────────────────────────
-  // Resident  → skip ID step, go straight to PIN
-  // Visitor   → go to ID verification first
+  // ── Proceed from RESULT ───────────────────────────────────────────────────────
   const handleProceedFromResult = () => {
     setPinInput("");
     setPinError("");
@@ -354,13 +361,12 @@ export default function GuardDashboard() {
     }
   };
 
-  // ── Proceed from VERIFY_ID (visitor) → look up host resident → PIN step ───
+  // ── Proceed from VERIFY_ID → fetch host resident → PIN step ──────────────────
   const handleProceedFromId = async () => {
     if (!idNumber.trim()) return;
     setPinLoading(true);
     setPinError("");
     try {
-      // Fetch the host resident so we can verify their PIN
       const host = await getResidentByResidentId(scanData.residentId);
       if (!host) { setPinError("Host resident not found in system."); setPinLoading(false); return; }
       setHostResident(host);
@@ -373,19 +379,15 @@ export default function GuardDashboard() {
     }
   };
 
-  // ── PIN verification + final log ─────────────────────────────────────────────
+  // ── PIN verification + final log ──────────────────────────────────────────────
   const handleVerifyPin = async () => {
     if (pinInput.length !== 6) { setPinError("Enter the 6-digit PIN."); return; }
     setPinLoading(true);
     setPinError("");
     try {
-      // For resident: verify against scanData (the resident themselves)
-      // For visitor:  verify against hostResident (the resident they're visiting)
       const targetDoc = scanType === "resident" ? scanData : hostResident;
       const valid = await verifyResidentPin(targetDoc.id, pinInput);
       if (!valid) { setPinError("Incorrect PIN. Please try again."); setPinLoading(false); return; }
-
-      // PIN correct — write the log
       await commitLog();
     } catch {
       setPinError("Verification failed. Please try again.");
@@ -394,7 +396,7 @@ export default function GuardDashboard() {
     }
   };
 
-  // ── Write entry log to Firestore ─────────────────────────────────────────────
+  // ── Write entry log ───────────────────────────────────────────────────────────
   const commitLog = async () => {
     setLogLoading(true);
     try {
@@ -405,15 +407,15 @@ export default function GuardDashboard() {
 
       await createEntryLog({
         type: scanType, subjectId, subjectName, residentUnit: unit, action,
-        idTypePresented:   isResident ? "—"      : idType,
-        idNumberPresented: isResident ? "—"      : idNumber,
+        idTypePresented:   isResident ? "—" : idType,
+        idNumberPresented: isResident ? "—" : idNumber,
         guardUid:   userData?.email ?? "",
         guardName:  userData?.name  ?? "",
         isBlacklisted:    false,
         isManuallyClosed: false,
       });
 
-      if (isResident) await setResidentInsideStatus(scanData.id, action === "entry");
+      if (isResident)  await setResidentInsideStatus(scanData.id, action === "entry");
       if (!isResident) await closeVisitorPass(scanData.id);
 
       setDoneData({ action, name: subjectName, type: scanType });
@@ -432,7 +434,7 @@ export default function GuardDashboard() {
     }
   };
 
-  // ── Manual override (time-out without QR) ───────────────────────────────────
+  // ── Manual override ───────────────────────────────────────────────────────────
   const handleManualOverride = async (type, docId) => {
     const isResident = type === "resident";
     let subjectName = "", subjectId = "", unit = "";
@@ -470,17 +472,17 @@ export default function GuardDashboard() {
   };
 
   const navItems = [
-    { id: "scanner", icon: QrCode,       label: "Scanner"  },
-    { id: "logs",    icon: ClipboardList, label: "Activity" },
+    { id: "scanner", icon: QrCode,        label: "Scanner"  },
+    { id: "logs",    icon: ClipboardList,  label: "Activity" },
   ];
 
-  // ── Step label helper ────────────────────────────────────────────────────────
   const stepLabel = (() => {
     if (scanState === SCAN_STATE.RESULT)     return "Step 1 — Scan Result";
     if (scanState === SCAN_STATE.VERIFY_ID)  return "Step 2 — Physical ID Verification";
     if (scanState === SCAN_STATE.VERIFY_PIN) {
-      if (scanType === "resident") return "Step 2 — Resident PIN Verification";
-      return "Step 3 — Resident PIN Verification";
+      return scanType === "resident"
+        ? "Step 2 — Resident PIN Verification"
+        : "Step 3 — Resident PIN Verification";
     }
     return "";
   })();
@@ -500,10 +502,7 @@ export default function GuardDashboard() {
           )}
         </div>
         <div className="flex items-center gap-3">
-          <div className="text-right">
-            <p className="text-base font-black text-white tabular-nums">{timeStr}</p>
-            <p className="text-[9px] text-gray-500 uppercase tracking-widest">{dateStr}</p>
-          </div>
+          <LiveClock />
           <button
             onClick={() => setMenuOpen(!menuOpen)}
             className="p-2 rounded-xl hover:bg-white/10 text-gray-400 transition-colors"
@@ -584,7 +583,7 @@ export default function GuardDashboard() {
               </div>
             )}
 
-            {/* Step label pill */}
+            {/* Step label */}
             {stepLabel && (
               <div className="flex items-center gap-2">
                 <Clock size={12} className="text-gray-400" />
@@ -737,7 +736,6 @@ export default function GuardDashboard() {
                   <p className="text-[10px] uppercase tracking-widest text-gray-300 mb-5">
                     Visiting: {scanData.residentName} · Unit {scanData.residentUnit}
                   </p>
-
                   <div className="space-y-4">
                     <div>
                       <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">
