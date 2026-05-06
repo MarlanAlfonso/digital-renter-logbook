@@ -1,7 +1,7 @@
 // src/context/AuthContext.jsx
 import { useEffect, useState } from "react";
 import { onAuthStateChanged, signOut } from "firebase/auth";
-import { collection, query, where, getDocs } from "firebase/firestore";
+import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "../firebase";
 import { AuthContext } from "./authContextObject";
 
@@ -19,34 +19,31 @@ export function AuthProvider({ children }) {
 
       if (firebaseUser) {
         try {
-          const email = firebaseUser.email;
+          const email = firebaseUser.email.toLowerCase().trim();
           let data = null;
           let role = null;
 
-          // 1. Check admins by email field
-          const adminQ = query(collection(db, "admins"), where("email", "==", email));
-          const adminSnap = await getDocs(adminQ);
-          if (!adminSnap.empty) {
-            data = adminSnap.docs[0].data();
+          // 1. Check admins — doc ID is email
+          const adminSnap = await getDoc(doc(db, "admins", email));
+          if (adminSnap.exists()) {
+            data = adminSnap.data();
             role = "admin";
           }
 
-          // 2. Check guards by email field
+          // 2. Check guards — doc ID is email
           if (!data) {
-            const guardQ = query(collection(db, "guards"), where("email", "==", email));
-            const guardSnap = await getDocs(guardQ);
-            if (!guardSnap.empty) {
-              data = guardSnap.docs[0].data();
+            const guardSnap = await getDoc(doc(db, "guards", email));
+            if (guardSnap.exists()) {
+              data = guardSnap.data();
               role = "guard";
             }
           }
 
-          // 3. Check residents by email field
+          // 3. Check residents — doc ID is email
           if (!data) {
-            const residentQ = query(collection(db, "residents"), where("email", "==", email));
-            const residentSnap = await getDocs(residentQ);
-            if (!residentSnap.empty) {
-              data = residentSnap.docs[0].data();
+            const residentSnap = await getDoc(doc(db, "residents", email));
+            if (residentSnap.exists()) {
+              data = residentSnap.data();
               role = "resident";
             }
           }

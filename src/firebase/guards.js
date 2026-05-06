@@ -1,32 +1,28 @@
 // src/firebase/guards.js
 import {
   doc, setDoc, getDoc, getDocs, updateDoc, deleteDoc,
-  collection, query, where, orderBy, serverTimestamp,
+  collection, query, orderBy, serverTimestamp,
 } from "firebase/firestore";
 import { db } from "../firebase";
 
-// ─── Get All Guards ───────────────────────────────────────────────────────────
 export async function getAllGuards() {
   const q    = query(collection(db, "guards"), orderBy("createdAt", "desc"));
   const snap = await getDocs(q);
   return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
 
-// ─── Get Guard by doc ID (email) ──────────────────────────────────────────────
 export async function getGuard(docId) {
   const snap = await getDoc(doc(db, "guards", docId));
   return snap.exists() ? { id: snap.id, ...snap.data() } : null;
 }
 
-// ─── Get Guard by Email (used after Google Sign-In) ───────────────────────────
+// ── Fixed: use direct doc lookup instead of query/where ──────────────────────
 export async function getGuardByEmail(email) {
-  const q    = query(collection(db, "guards"), where("email", "==", email.toLowerCase().trim()));
-  const snap = await getDocs(q);
-  if (snap.empty) return null;
-  return { id: snap.docs[0].id, ...snap.docs[0].data() };
+  const snap = await getDoc(doc(db, "guards", email.toLowerCase().trim()));
+  if (!snap.exists()) return null;
+  return { id: snap.id, ...snap.data() };
 }
 
-// ─── Add Guard (Firestore only — Google Sign-In) ──────────────────────────────
 export async function addGuard({ name, email, post, shiftStart, shiftEnd }) {
   const docId = email.toLowerCase().trim();
   await setDoc(doc(db, "guards", docId), {
@@ -42,7 +38,6 @@ export async function addGuard({ name, email, post, shiftStart, shiftEnd }) {
   return docId;
 }
 
-// ─── Update Guard ─────────────────────────────────────────────────────────────
 export async function updateGuard(docId, updates) {
   const allowed = ["name", "post", "shiftStart", "shiftEnd", "status"];
   const filtered = Object.fromEntries(
@@ -51,12 +46,10 @@ export async function updateGuard(docId, updates) {
   await updateDoc(doc(db, "guards", docId), filtered);
 }
 
-// ─── Set Guard Status ─────────────────────────────────────────────────────────
 export async function setGuardStatus(docId, status) {
   await updateDoc(doc(db, "guards", docId), { status });
 }
 
-// ─── Check if Guard is On Shift ───────────────────────────────────────────────
 export function isGuardOnShift(shiftStart, shiftEnd) {
   const now            = new Date();
   const currentMinutes = now.getHours() * 60 + now.getMinutes();
@@ -72,7 +65,6 @@ export function isGuardOnShift(shiftStart, shiftEnd) {
   }
 }
 
-// ─── Get On-Duty Guards ───────────────────────────────────────────────────────
 export async function getOnDutyGuards() {
   const guards = await getAllGuards();
   return guards.filter(
